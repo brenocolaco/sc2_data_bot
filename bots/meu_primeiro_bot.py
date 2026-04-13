@@ -15,6 +15,11 @@ from sc2.data import Result
 
 #Definimos a classe do bot
 class WorkerBot(BotAI):
+    # O __init__ permite que o bot 'saiba' a dificuldade assim que nasce
+    def __init__(self, difficulty_level="Unknown"):
+        super().__init__()
+        self.difficulty_level = difficulty_level
+
     async def on_step(self, iteration):
         """
         on_step roda a cada 'frame' do jogo. É o loop de varredura (como num CLP).
@@ -107,26 +112,29 @@ class WorkerBot(BotAI):
         # BLOCO DE CONEXÃO SQL (Try/Except para evitar que o script trave se o banco sumir)
         # 2. Conectar e salvar no banco
         try:
-            # os.path.join garante que o caminho funcione mesmo se movermos a pasta raiz
             db_path = os.path.join("data", "sc2_results.db")
             conn = sqlite3.connect(db_path)
             cursor = conn.cursor()
 
+            # AGORA O INSERT TEM 5 CAMPOS (adicionamos a dificuldade no fim)
             cursor.execute('''
-                INSERT INTO matches (result, duration_s, minerals_collected, workers_built)
-                VALUES (?, ?, ?, ?)
-            ''', (resultado, duracao, minerais_totais, trabalhadores))
+                INSERT INTO matches (result, duration_s, minerals_collected, workers_built, difficulty)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (resultado, self.time, self.state.score.collected_minerals, self.supply_workers, self.difficulty_level))
 
-            conn.commit() # Salva as alterações
-            conn.close() # Fecha a conexão (Importante para não corromper o .db)
-            print("Dados salvos no banco com sucesso!")
+            conn.commit()
+            conn.close()
+            print(f"Dados salvos! Dificuldade registrada: {self.difficulty_level}")
         except Exception as e:
-            print(f"Erro ao salvar no banco: {e}")
-
+            print(f"Erro ao salvar: {e}")
             
 # Rodar o jogo
 if __name__ == "__main__":
+    # Escolha a dificuldade aqui
+    nivel_dificuldade = Difficulty.Hard 
+
     run_game(maps.get("AutomatonLE"), [
-        Bot(Race.Protoss, WorkerBot()),
-        Computer(Race.Terran, Difficulty.Medium)
-    ], realtime=False)
+        # Aqui passamos o nome da dificuldade (ex: "Hard") para o bot guardar
+        Bot(Race.Protoss, WorkerBot(difficulty_level=nivel_dificuldade.name)),
+        Computer(Race.Terran, nivel_dificuldade)
+    ], realtime=True)
