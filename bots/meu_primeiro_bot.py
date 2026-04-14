@@ -13,12 +13,27 @@ import sqlite3
 import os
 from sc2.data import Result
 
+# Imports para os mapas
+
+import random
+from pathlib import Path
+
+#Import para o finally
+import time
+
 #Definimos a classe do bot
 class WorkerBot(BotAI):
     # O __init__ permite que o bot 'saiba' a dificuldade assim que nasce
-    def __init__(self, difficulty_level="Unknown"):
+    def __init__(self, difficulty_level="Unknown", map_name="Unknown"):
         super().__init__()
         self.difficulty_level = difficulty_level
+        self.map_name = map_name
+        self.resultado_final = "Interrompido" # Valor padrão para quando o jogo for fechado
+
+        # Variáveis de backup para o BI
+        self.minerais_backup = 0
+        self.tempo_backup = 0
+        self.workers_backup = 0
 
     async def on_step(self, iteration):
         """
@@ -26,6 +41,11 @@ class WorkerBot(BotAI):
         O parâmetro 'iteration' conta quantos passos já foram dados.
 
         """
+        # Atualiza os backups a cada frame
+        self.minerais_backup = self.state.score.collected_minerals
+        self.tempo_backup = self.time
+        self.workers_backup = self.supply_workers
+
         # 1. Distribuir trabalhadores nos minerais automaticamente
         await self.distribute_workers()
 
@@ -37,6 +57,9 @@ class WorkerBot(BotAI):
         # Agora sabemos que pelo menos um nexus existe
         nexus = self.townhalls.ready.random
 
+        #Posicionamento
+        posicao = nexus.position.towards(self.game_info.map_center, 8)
+
         # 3. Treinar trabalhadores
         if self.can_afford(UnitTypeId.PROBE) and nexus.is_idle:
             nexus.train(UnitTypeId.PROBE)
@@ -44,14 +67,13 @@ class WorkerBot(BotAI):
         # 4. Construir Pylons (usando o nexus que agora é garantido)
         if self.supply_left < 3 and not self.already_pending(UnitTypeId.PYLON):
             if self.can_afford(UnitTypeId.PYLON):
-                await self.build(UnitTypeId.PYLON, near=nexus)
+                await self.build(UnitTypeId.PYLON, near=posicao)
         
         # 5. COLETA DE GÁS (Assimilators)
         # Construímos gás se tivermos um Gateway ou se estivermos com muito mineral
-        if self.can_afford(UnitTypeId.ASSIMILATOR) and self.structures(UnitTypeId.GATEWAY).exists:
+        if self.can_afford(UnitTypeId.ASSIMILATOR) and not self.structures(UnitTypeId.GATEWAY).exists:
             for geyser in self.vespene_geyser.closer_than(15, nexus):
-                if not self.structures(UnitTypeId.ASSIMILATOR).closer_than(2, geyser).exists:
-                    await self.build(UnitTypeId.ASSIMILATOR, near=geyser)
+                await self.build(UnitTypeId.ASSIMILATOR, near=geyser)
 
         # 6. PRODUÇÃO MILITAR ESCALÁVEL
         # Definimos um limite (ex: 3 Gateways). 
@@ -59,7 +81,7 @@ class WorkerBot(BotAI):
         if self.structures(UnitTypeId.GATEWAY).amount < 3:
             if self.can_afford(UnitTypeId.GATEWAY) and not self.already_pending(UnitTypeId.GATEWAY):
                 # Sempre usamos o nexus mais próximo para construir perto
-                await self.build(UnitTypeId.GATEWAY, near=nexus)
+                await self.build(UnitTypeId.GATEWAY, near=posicao)
         
         # Treinar Zealots se o Gateway estiver parado
         for gw in self.structures(UnitTypeId.GATEWAY).ready.idle:
@@ -81,8 +103,11 @@ class WorkerBot(BotAI):
 
         # Se tivermos 15 ou mais, mandamos o ataque total
         if zealots.amount >= 15:
+            if self.enemy_structures.exists:
+                target = self.enemy_structures.random.position
+            else:
             # Localização da base inimiga principal
-            target = self.enemy_start_locations[0]
+                target = self.enemy_start_locations[0]
             
             for zealot in zealots:
                 # Comandamos cada unidade a atacar o alvo
@@ -97,44 +122,75 @@ class WorkerBot(BotAI):
     async def on_end(self, game_result):
         """
         Método executado automaticamente ao fim da partida.
-        Aqui é onde vamos pegar os dados para colocar no banco de dados.
-
+        
         """
-        print(f"Fim de jogo: {game_result}")
 
-        # 1. Preparar os dados
-        resultado = "Vitoria" if game_result == Result.Victory else "Derrota"
-        duracao = self.time  # Tempo em segundos
-        # Métrica simples de economia: Minerais atuais + Minerais gastos
-        minerais_totais = self.state.score.collected_minerals 
-        trabalhadores = self.supply_workers
+        # Lógica de decisão do status
+        if game_result == Result.Victory:
+            self.resultado_final = "Vitoria"
+        elif game_result == Result.Defeat:
+            self.resultado_final = "Derrota"
 
-        # BLOCO DE CONEXÃO SQL (Try/Except para evitar que o script trave se o banco sumir)
-        # 2. Conectar e salvar no banco
+        print(f"Evento on_end disparado! Resultado: {self.resultado_final}")
+
+                    
+# Rodar o jogo
+def get_random_map():
+    # Caminho padrão onde o SC2 instala os mapas
+    # Se você tiver uma pasta específica, mude o caminho abaixo
+    map_path = Path("C:/Program Files (x86)/StarCraft II/Maps")
+    
+    # Lista todos os arquivos .SC2Map recursivamente
+    all_maps = list(map_path.glob("**/*.SC2Map"))
+    
+    if not all_maps:
+        return "AutomatonLE" # Fallback caso não encontre nada
+    
+    # Retorna apenas o nome do mapa (sem a extensão .SC2Map)
+    return random.choice(all_maps).stem
+
+if __name__ == "__main__":
+    nivel = Difficulty.VeryHard
+    mapa_escolhido = get_random_map()
+
+    # Criamos a instância do bot fora do run_game para acessar os dados depois
+    meu_bot = WorkerBot(difficulty_level=nivel.name, map_name=mapa_escolhido)
+
+    print(f"Iniciando partida no mapa: {mapa_escolhido}")
+
+    try:
+        run_game(maps.get(mapa_escolhido), [
+            Bot(Race.Protoss, meu_bot),
+            Computer(Race.Terran, nivel)
+        ], realtime=False)
+    except Exception as e:
+        # Isso evita que aquele "mar de vermelho" apareça no seu terminal
+        print(f"Partida encerrada pelo usuário ou erro de conexão: {e}")
+    finally:
+        time.sleep(2)
+
+        print(f"Iniciando salvamento... Status atual: {meu_bot.resultado_final}")
+        
         try:
             db_path = os.path.join("data", "sc2_results.db")
             conn = sqlite3.connect(db_path)
             cursor = conn.cursor()
 
-            # AGORA O INSERT TEM 5 CAMPOS (adicionamos a dificuldade no fim)
+            # Capturamos os dados que o bot conseguiu minerar até o momento do fechamento
             cursor.execute('''
-                INSERT INTO matches (result, duration_s, minerals_collected, workers_built, difficulty)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (resultado, self.time, self.state.score.collected_minerals, self.supply_workers, self.difficulty_level))
+                INSERT INTO matches (result, duration_s, minerals_collected, workers_built, difficulty, map_name)
+                VALUES (?, ?, ?, ?, ?, ?)
+            ''', (
+                meu_bot.resultado_final, 
+                meu_bot.tempo_backup, 
+                meu_bot.minerais_backup, 
+                meu_bot.workers_backup, 
+                meu_bot.difficulty_level, 
+                meu_bot.map_name
+            ))
 
             conn.commit()
             conn.close()
-            print(f"Dados salvos! Dificuldade registrada: {self.difficulty_level}")
-        except Exception as e:
-            print(f"Erro ao salvar: {e}")
-            
-# Rodar o jogo
-if __name__ == "__main__":
-    # Escolha a dificuldade aqui
-    nivel_dificuldade = Difficulty.Hard 
-
-    run_game(maps.get("AutomatonLE"), [
-        # Aqui passamos o nome da dificuldade (ex: "Hard") para o bot guardar
-        Bot(Race.Protoss, WorkerBot(difficulty_level=nivel_dificuldade.name)),
-        Computer(Race.Terran, nivel_dificuldade)
-    ], realtime=True)
+            print(f"Partida registrada como: {meu_bot.resultado_final}")
+        except Exception as db_error:
+            print(f"Erro ao salvar no banco: {db_error}")
